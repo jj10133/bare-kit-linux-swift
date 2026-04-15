@@ -1,0 +1,5 @@
+module CBareKit [system] {
+    header "../../bare-sdk/include/worklet.h"
+    header "../../bare-sdk/include/ipc.h"
+    export *
+}
