@@ -1,63 +1,36 @@
-// Worklet.swift
-// Mirrors the BareWorklet ObjC API from bare-kit/apple/BareKit/BareKit.h
-
 import CBareKit
 import Foundation
 
 public final class Worklet {
 
-    // ── Configuration ─────────────────────────────────────────────────────────
-
     public struct Configuration {
-        /// Memory limit for the JS heap in bytes. Default: 32 MiB.
         public var memoryLimit: Int = 32 * 1024 * 1024
-
-        /// Directory for worklet assets. nil = no assets.
         public var assets: String? = nil
-
         public init() {}
     }
 
-    // ── Internal state ────────────────────────────────────────────────────────
-
     internal var handle: UnsafeMutablePointer<bare_worklet_t>? = nil
     private var config: Configuration
-    private var sourceBuffer: [Int8] = []  // keeps source alive
-
-    // ── Init ──────────────────────────────────────────────────────────────────
+    private var sourceBuffer: [Int8] = []
 
     public init(configuration: Configuration = Configuration()) {
         self.config = configuration
     }
 
-    // ── Start ─────────────────────────────────────────────────────────────────
-
-    /// Start the worklet loading JS from a file path.
-    /// The file can be a plain .js file or a .bundle produced by bare-pack.
     public func start(_ filename: String, arguments: [String] = []) {
         _start(filename: filename, source: nil, arguments: arguments)
     }
 
-    /// Start the worklet with inline JS source.
-    public func start(
-        _ filename: String, source: String,
-        arguments: [String] = []
-    ) {
+    public func start(_ filename: String, source: String, arguments: [String] = []) {
         _start(filename: filename, source: source, arguments: arguments)
     }
 
-    /// Start the worklet with raw Data source (e.g. loaded bundle).
-    public func start(
-        _ filename: String, source: Data,
-        arguments: [String] = []
-    ) {
-        let str = String(data: source, encoding: .utf8) ?? ""
-        _start(filename: filename, source: str, arguments: arguments)
+    public func start(_ filename: String, source: Data, arguments: [String] = []) {
+        _start(filename: filename,
+               source: String(data: source, encoding: .utf8) ?? "",
+               arguments: arguments)
     }
 
-    // ── Lifecycle — matches bare-ios API exactly ───────────────────────────────
-
-    /// Suspend the worklet. linger: ms to keep process alive before exit.
     public func suspend(linger: Int = 0) {
         guard let h = handle else { return }
         bare_worklet_suspend(h, Int32(linger))
@@ -74,54 +47,59 @@ public final class Worklet {
         handle = nil
     }
 
-    // ── Private ───────────────────────────────────────────────────────────────
-
-    private func _start(
-        filename: String, source: String?,
-        arguments: [String]
-    ) {
-        // Alloc
+    private func _start(filename: String, source: String?, arguments: [String]) {
         bare_worklet_alloc(&handle)
 
-        // Options
         var opts = bare_worklet_options_t()
         opts.memory_limit = config.memoryLimit
+        opts.assets = nil
+
         if let assets = config.assets {
-            // Keep assets path alive — stored as C string in opts
-            // (assets is short-lived here; full solution needs a stored copy)
-            assets.withCString {
-                opts.assets = $0
+            assets.withCString { ptr in
+                opts.assets = ptr
                 bare_worklet_init(handle, &opts)
             }
         } else {
             bare_worklet_init(handle, &opts)
         }
 
-        // Source buffer
-        var uvBuf: uv_buf_t
         if let src = source {
             sourceBuffer = Array(src.utf8).map { Int8(bitPattern: $0) }
-            uvBuf = sourceBuffer.withUnsafeMutableBufferPointer { buf in
-                uv_buf_init(buf.baseAddress, UInt32(buf.count))
+        }
+
+        // Recursive helper — keeps all CStrings alive on the stack
+        func run(remaining: [String], ptrs: [UnsafePointer<CChar>?]) {
+            if remaining.isEmpty {
+                var argv = ptrs
+                filename.withCString { path in
+                    if source != nil {
+                        sourceBuffer.withUnsafeMutableBufferPointer { buf in
+                            var uvBuf = uv_buf_init(buf.baseAddress, UInt32(buf.count))
+                            if argv.isEmpty {
+                                _ = bare_worklet_start(handle, path, &uvBuf, 0, nil)
+                            } else {
+                                _ = bare_worklet_start(handle, path, &uvBuf,
+                                                       Int32(argv.count), &argv)
+                            }
+                        }
+                    } else {
+                        if argv.isEmpty {
+                            _ = bare_worklet_start(handle, path, nil, 0, nil)
+                        } else {
+                            _ = bare_worklet_start(handle, path, nil,
+                                                   Int32(argv.count), &argv)
+                        }
+                    }
+                }
+            } else {
+                remaining[0].withCString { ptr in
+                    run(remaining: Array(remaining.dropFirst()),
+                        ptrs: ptrs + [UnsafePointer<CChar>(ptr)])
+                }
             }
-        } else {
-            uvBuf = uv_buf_init(nil, 0)
         }
 
-        // Arguments
-        var cArgs: [UnsafePointer<CChar>?] = arguments.map {
-            strdup($0)
-        }
-        defer { cArgs.forEach { free(UnsafeMutablePointer(mutating: $0)) } }
-
-        filename.withCString { path in
-            _ = bare_worklet_start(
-                handle, path,
-                source != nil ? &uvBuf : nil,
-                Int32(arguments.count),
-                cArgs.isEmpty ? nil : &cArgs
-            )
-        }
+        run(remaining: arguments, ptrs: [])
     }
 
     deinit {
