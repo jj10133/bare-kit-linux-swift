@@ -1,9 +1,9 @@
-// swift-tools-version: 6.2
-// The swift-tools-version declares the minimum version of Swift required to build this package.
-
+import Foundation
 import PackageDescription
 
-let bareSDK = "\(Context.packageDirectory)/bare-sdk"
+let bareSDK =
+    ProcessInfo.processInfo.environment["BARE_SDK_DIR"]
+    ?? "\(Context.packageDirectory)/bare-sdk"
 
 let package = Package(
     name: "BareKitLinux",
@@ -11,15 +11,12 @@ let package = Package(
         .library(name: "BareKitLinux", targets: ["BareKit"])
     ],
     targets: [
-        // C bridge — exposes bare-kit Linux headers to Swift
         .systemLibrary(
             name: "CBareKit",
             path: "Sources/CBareKit",
             pkgConfig: nil,
             providers: []
         ),
-
-        // Clean Swift API — mirrors bare-kit-swift on iOS/macOS
         .target(
             name: "BareKit",
             dependencies: ["CBareKit"],
